@@ -1,4 +1,4 @@
-/*! AeroGear JavaScript Library - v1.0.0-M2 - 2013-01-21
+/*! AeroGear JavaScript Library - v1.0.0-M3 - 2013-02-20
 * https://github.com/aerogear/aerogear-js
 * JBoss, Home of Professional Open Source
 * Copyright Red Hat, Inc., and individual contributors
@@ -113,66 +113,6 @@ AeroGear.Core = function() {
 AeroGear.isArray = function( obj ) {
     return ({}).toString.call( obj ) === "[object Array]";
 };
-
-(function( AeroGear, $, undefined ) {
-    /**
-        Wrapper utility around jQuery.ajax to preform some custom actions
-        @private
-        @method
-        @param {Object} caller - the AeroGear object (pipe, datamanager, etc.) that is calling AeroGear.ajax
-        @param {Object} options - settings for jQuery.ajax
-     */
-    AeroGear.ajax = function( caller, options ) {
-        var deferred = $.Deferred( function() {
-            var that = this,
-                settings = $.extend( {}, {
-                    contentType: "application/json",
-                    dataType: "json"
-                }, options );
-
-            this.done( settings.success );
-            this.fail( settings.error );
-            this.always( settings.complete );
-
-            var ajaxSettings = $.extend( {}, settings, {
-                success: function( data, textStatus, jqXHR ) {
-                    that.resolve( typeof data === "string" && ajaxSettings.dataType === "json" ? JSON.parse( data ) : data, textStatus, jqXHR );
-                },
-                error: function (jqXHR, textStatus, errorThrown) {
-                    if ( ajaxSettings.dataType === "json" ) {
-                        try {
-                            jqXHR.responseJSON = JSON.parse( jqXHR.responseText );
-                        } catch( error ) {}
-                    }
-                    that.reject( jqXHR, textStatus, errorThrown );
-                },
-                complete: function( jqXHR, textStatus ) {
-                    that.resolve( jqXHR, textStatus );
-                }
-            });
-
-            if ( ajaxSettings.contentType === "application/json" && ajaxSettings.data && ( ajaxSettings.type === "POST" || ajaxSettings.type === "PUT" ) ) {
-                ajaxSettings.data = JSON.stringify( ajaxSettings.data );
-            }
-
-            if ( AeroGear.Auth && !caller.isAuthenticated() ) {
-                this.reject( "auth", "Error: Authentication Required" );
-            } else if ( caller.addAuthIdentifier ) {
-                $.ajax( caller.addAuthIdentifier( ajaxSettings ) );
-            } else {
-                $.ajax( ajaxSettings );
-            }
-        });
-
-        var promise = deferred.promise();
-
-        promise.success = deferred.done;
-        promise.error = deferred.fail;
-        promise.complete = deferred.always;
-
-        return promise;
-    };
-})( AeroGear, jQuery );
 
 //     node-uuid/uuid.js
 //
@@ -483,11 +423,18 @@ AeroGear.isArray = function( obj ) {
         The REST adapter is the default type used when creating a new pipe. It uses jQuery.ajax to communicate with the server. By default, the RESTful endpoint used by this pipe is the app's current context, followed by the pipe name. For example, if the app is running on http://mysite.com/myApp, then a pipe named `tasks` would use http://mysite.com/myApp/tasks as its REST endpoint.
         @constructs AeroGear.Pipeline.adapters.Rest
         @param {String} pipeName - the name used to reference this particular pipe
+        @param {String} [type="Rest"] - the name used to reference this particular pipe
         @param {Object} [settings={}] - the settings to be passed to the adapter
         @param {Object} [settings.authenticator=null] - the AeroGear.auth object used to pass credentials to a secure endpoint
         @param {String} [settings.baseURL] - defines the base URL to use for an endpoint
         @param {String} [settings.endpoint=pipename] - overrides the default naming of the endpoint which uses the pipeName
+        @param {Object|Boolean} [settings.pageConfig] - an object containing the current paging configuration, true to use all defaults or false/undefined to not use paging
+        @param {String} [settings.pageConfig.metadataLocation="webLinking"] - indicates whether paging information is received from the response "header", the response "body" or via RFC 5988 "webLinking", which is the default.
+        @param {String} [settings.pageConfig.previousIdentifier="previous"] - the name of the prev link header, content var or web link rel
+        @param {String} [settings.pageConfig.nextIdentifier="next"] - the name of the next link header, content var or web link rel
+        @param {Function} [settings.pageConfig.parameterProvider] - a function for handling custom parameter placement within header and body based paging - for header paging, the function receives a jqXHR object and for body paging, the function receives the JSON formatted body as an object. the function should then return an object containing keys named for the previous/nextIdentifier options and whos values are either a map of parameters and values or a properly formatted query string
         @param {String} [settings.recordId="id"] - the name of the field used to uniquely identify a "record" in the data
+        @param {Number} [settings.timeout=60] - the amount of time, in seconds, to wait before timing out a connection and firing the complete callback for that request
         @returns {Object} The created pipe
      */
     AeroGear.Pipeline.adapters.Rest = function( pipeName, settings ) {
@@ -502,23 +449,17 @@ AeroGear.isArray = function( obj ) {
         var endpoint = settings.endpoint || pipeName,
             ajaxSettings = {
                 // use the pipeName as the default rest endpoint
-                url: settings.baseURL ? settings.baseURL + endpoint : endpoint
+                url: settings.baseURL ? settings.baseURL + endpoint : endpoint,
+                contentType: "application/json",
+                dataType: "json"
             },
             recordId = settings.recordId || "id",
             authenticator = settings.authenticator || null,
-            type = "Rest";
+            type = "Rest",
+            pageConfig = settings.pageConfig,
+            timeout = settings.timeout ? settings.timeout * 1000 : 60000;
 
         // Privileged Methods
-        /**
-            Return whether or not the client should consider itself authenticated. Of course, the server may have removed access so that will have to be handled when a request is made
-            @private
-            @augments Rest
-            @returns {Boolean}
-         */
-        this.isAuthenticated = function() {
-            return authenticator ? authenticator.isAuthenticated() : true;
-        };
-
         /**
             Adds the auth token to the headers and returns the modified version of the settings
             @private
@@ -560,6 +501,124 @@ AeroGear.isArray = function( obj ) {
         this.getRecordId = function() {
             return recordId;
         };
+
+        /**
+            Returns the value of the private timeout var
+            @private
+            @augments Rest
+            @returns {Number}
+         */
+        this.getTimeout = function() {
+            return timeout;
+        };
+
+        /**
+            Returns the value of the private pageConfig var
+            @private
+            @augments Rest
+            @returns {Object}
+         */
+        this.getPageConfig = function() {
+            return pageConfig;
+        };
+
+        /**
+            Updates the value of the private pageConfig var with only the items specified in newConfig unless the reset option is specified
+            @private
+            @augments Rest
+         */
+        this.updatePageConfig = function( newConfig, reset ) {
+            if ( reset ) {
+                pageConfig = {};
+                pageConfig.metadataLocation = newConfig.metadataLocation ? newConfig.metadataLocation : "webLinking";
+                pageConfig.previousIdentifier = newConfig.previousIdentifier ? newConfig.previousIdentifier : "previous";
+                pageConfig.nextIdentifier = newConfig.nextIdentifier ? newConfig.nextIdentifier : "next";
+                pageConfig.parameterProvider = newConfig.parameterProvider ? newConfig.parameterProvider : null;
+            } else {
+                $.extend( pageConfig, newConfig );
+            }
+        };
+
+        // Set pageConfig defaults
+        if ( pageConfig ) {
+            this.updatePageConfig( pageConfig, true );
+        }
+
+        // Paging Helpers
+        this.webLinkingPageParser = function( jqXHR ) {
+            var linkAr, linksAr, currentLink, params, paramAr, identifier,
+                query = {};
+
+            linksAr = jqXHR.getResponseHeader( "Link" ).split( "," );
+            for ( var link in linksAr ) {
+                linkAr = linksAr[ link ].trim().split( ";" );
+                for ( var item in linkAr ) {
+                    currentLink = linkAr[ item ].trim();
+                    if ( currentLink.indexOf( "<" ) === 0 && currentLink.lastIndexOf( ">" ) === linkAr[ item ].length - 1 ) {
+                        params = currentLink.substr( 1, currentLink.length - 2 ).split( "?" )[ 1 ];
+                    } else if ( currentLink.indexOf( "rel=" ) === 0 ) {
+                        if ( currentLink.indexOf( pageConfig.previousIdentifier ) >= 0 ) {
+                            identifier = pageConfig.previousIdentifier;
+                        } else if ( currentLink.indexOf( pageConfig.nextIdentifier ) >= 0 ) {
+                            identifier = pageConfig.nextIdentifier;
+                        }
+                    }
+                }
+
+                if( identifier ) {
+                    query[ identifier ] = params;
+                    identifier = undefined;
+                }
+            }
+
+            return query;
+        };
+
+        this.headerPageParser = function( jqXHR ) {
+            var previousQueryString = jqXHR.getResponseHeader( pageConfig.previousIdentifier ),
+                nextQueryString = jqXHR.getResponseHeader( pageConfig.nextIdentifier ),
+                pagingMetadata = {},
+                query = {};
+
+            if ( pageConfig.parameterProvider ) {
+                pagingMetadata = pageConfig.parameterProvider( jqXHR );
+                query[ pageConfig.previousIdentifier ] = pagingMetadata[ pageConfig.previousIdentifier ];
+                query[ pageConfig.nextIdentifier ] = pagingMetadata[ pageConfig.nextIdentifier ];
+            } else {
+                query[ pageConfig.previousIdentifier ] = previousQueryString ? previousQueryString.split( "?" )[ 1 ] : null;
+                query[ pageConfig.nextIdentifier ] = nextQueryString ? nextQueryString.split( "?" )[ 1 ] : null;
+            }
+
+            return query;
+        };
+
+        this.bodyPageParser = function( body ) {
+            var query = {},
+                pagingMetadata = {};
+
+            if ( pageConfig.parameterProvider ) {
+                pagingMetadata = pageConfig.parameterProvider( body );
+
+                query[ pageConfig.previousIdentifier ] = pagingMetadata[ pageConfig.previousIdentifier ];
+                query[ pageConfig.nextIdentifier ] = pagingMetadata[ pageConfig.nextIdentifier ];
+            } else {
+                query[ pageConfig.previousIdentifier ] = body[ pageConfig.previousIdentifier ];
+                query[ pageConfig.nextIdentifier ] = body[ pageConfig.nextIdentifier ];
+            }
+
+            return query;
+        };
+
+        this.formatJSONError = function( xhr ) {
+            if ( this.getAjaxSettings().dataType === "json" ) {
+                try {
+                    xhr.responseJSON = JSON.parse( xhr.responseText );
+                } catch( error ) {
+                    // Response was not JSON formatted
+                }
+            }
+            return xhr;
+        };
     };
 
     // Public Methods
@@ -567,15 +626,18 @@ AeroGear.isArray = function( obj ) {
         Reads data from the specified endpoint
         @param {Object} [options={}] - Additional options
         @param {Function} [options.complete] - a callback to be called when the result of the request to the server is complete, regardless of success
-        @param {Object} [options.query] - a hash of key/value pairs that can be passed to the server as additional information for use when determining what data to return
-        @param {Object} [options.id] - the value to append to the endpoint URL,  should be the same as the pipelines recordId
         @param {Function} [options.error] - a callback to be called when the request to the server results in an error
-        @param {Object} [options.statusCode] - a collection of status codes and callbacks to fire when the request to the server returns on of those codes. For more info see the statusCode option on the <a href="http://api.jquery.com/jQuery.ajax/">jQuery.ajax page</a>.
-        @param {Function} [options.success] - a callback to be called when the result of the request to the server is successful
+        @param {Object} [options.id] - the value to append to the endpoint URL,  should be the same as the pipelines recordId
         @param {Mixed} [options.jsonp] - Turns jsonp on/off for reads, Set to true, or an object with options
         @param {String} [options.jsonp.callback] - Override the callback function name in a jsonp request. This value will be used instead of 'callback' in the 'callback=?' part of the query string in the url
         @param {String} [options.jsonp.customCallback] - Specify the callback function name for a JSONP request. This value will be used instead of the random name automatically generated by jQuery
-        @returns {Object} A deferred implementing the promise interface similar to the jqXHR created by jQuery.ajax
+        @param {Number} [options.limitValue=10] - the maximum number of results the server should return when using a paged pipe
+        @param {String} [options.offsetValue="0"] - the offset of the first element that should be included in the returned collection when using a paged pipe
+        @param {Object|Boolean} [options.paging] - this object can be used to overwrite the default paging parameters to request data from other pages or completely customize the paging functionality, leaving undefined will cause paging to use defaults, setting to false will turn off paging and request all data for this single read request
+        @param {Object} [options.query] - a hash of key/value pairs that can be passed to the server as additional information for use when determining what data to return
+        @param {Object} [options.statusCode] - a collection of status codes and callbacks to fire when the request to the server returns on of those codes. For more info see the statusCode option on the <a href="http://api.jquery.com/jQuery.ajax/">jQuery.ajax page</a>.
+        @param {Function} [options.success] - a callback to be called when the result of the request to the server is successful
+        @returns {Object} The jqXHR created by jQuery.ajax. To cancel the request, simply call the abort() method of the jqXHR object which will then trigger the error and complete callbacks for this request. For more info, see the <a href="http://api.jquery.com/jQuery.ajax/">jQuery.ajax page</a>.
         @example
         var myPipe = AeroGear.Pipeline( "tasks" ).pipes[ 0 ];
 
@@ -586,7 +648,7 @@ AeroGear.isArray = function( obj ) {
         // this object is converted to query string parameters which the server can use.
         // The values would be determined by what the server is expecting
         var filteredData = myPipe.read({
-            data: {
+            query: {
                 limit: 10,
                 date: "2012-08-01"
                 ...
@@ -594,15 +656,14 @@ AeroGear.isArray = function( obj ) {
         });
      */
     AeroGear.Pipeline.adapters.Rest.prototype.read = function( options ) {
-        var that = this,
+        var url, success, error, extraOptions,
+            that = this,
             recordId = this.getRecordId(),
             ajaxSettings = this.getAjaxSettings(),
-            url,
-            success,
-            error,
-            extraOptions;
+            pageConfig = this.getPageConfig();
 
-        options = options || {};
+        options = options ? options : {};
+        options.query = options.query ? options.query : {};
 
         if ( options[ recordId ] ) {
             url = ajaxSettings.url + "/" + options[ recordId ];
@@ -610,12 +671,51 @@ AeroGear.isArray = function( obj ) {
             url = ajaxSettings.url;
         }
 
-        success = function( data ) {
+        // Handle paging
+        if ( pageConfig && options.paging !== false ) {
+            // Set custom paging to defaults if not used
+            if ( !options.paging ) {
+                options.paging = {
+                    offset: options.offsetValue || 0,
+                    limit: options.limitValue || 10
+                };
+            }
+
+            // Apply paging to request
+            options.query = options.query || {};
+            for ( var item in options.paging ) {
+                options.query[ item ] = options.paging[ item ];
+            }
+        }
+
+        success = function( data, textStatus, jqXHR ) {
+            var paramMap;
+
+            // Generate paged response
+            if ( pageConfig && options.paging !== false ) {
+                paramMap = that[ pageConfig.metadataLocation + "PageParser" ]( pageConfig.metadataLocation === "body" ? data : jqXHR );
+
+                [ "previous", "next" ].forEach( function( element ) {
+                    data[ element ] = (function( pipe, parameters, options ) {
+                        return function( callbacks ) {
+                            options.paging = true;
+                            options.offsetValue = options.limitValue = undefined;
+                            options.query = parameters;
+                            options.success = callbacks && callbacks.success ? callbacks.success : options.success;
+                            options.error = callbacks && callbacks.error ? callbacks.error : options.error;
+
+                            return pipe.read( options );
+                        };
+                    })( that, paramMap[ pageConfig[ element + "Identifier" ] ], options );
+                });
+            }
+
             if ( options.success ) {
                 options.success.apply( this, arguments );
             }
         };
-        error = function( type, errorMessage ) {
+        error = function( jqXHR, textStatus, errorThrown ) {
+            jqXHR = that.formatJSONError( jqXHR );
             if ( options.error ) {
                 options.error.apply( this, arguments );
             }
@@ -627,7 +727,9 @@ AeroGear.isArray = function( obj ) {
             error: error,
             url: url,
             statusCode: options.statusCode,
-            complete: options.complete
+            complete: options.complete,
+            headers: options.headers,
+            timeout: this.getTimeout()
         };
 
         if( options.jsonp ) {
@@ -638,7 +740,7 @@ AeroGear.isArray = function( obj ) {
             }
         }
 
-        return AeroGear.ajax( this, $.extend( {}, this.getAjaxSettings(), extraOptions ) );
+        return $.ajax( this.addAuthIdentifier( $.extend( {}, this.getAjaxSettings(), extraOptions ) ) );
     };
 
     /**
@@ -649,7 +751,7 @@ AeroGear.isArray = function( obj ) {
         @param {Function} [options.error] - a callback to be called when the request to the server results in an error
         @param {Object} [options.statusCode] - a collection of status codes and callbacks to fire when the request to the server returns on of those codes. For more info see the statusCode option on the <a href="http://api.jquery.com/jQuery.ajax/">jQuery.ajax page</a>.
         @param {Function} [options.success] - a callback to be called when the result of the request to the server is successful
-        @returns {Object} A deferred implementing the promise interface similar to the jqXHR created by jQuery.ajax
+        @returns {Object} The jqXHR created by jQuery.ajax. To cancel the request, simply call the abort() method of the jqXHR object which will then trigger the error and complete callbacks for this request. For more info, see the <a href="http://api.jquery.com/jQuery.ajax/">jQuery.ajax page</a>.
         @example
         var myPipe = AeroGear.Pipeline( "tasks" ).pipes[ 0 ];
 
@@ -700,27 +802,35 @@ AeroGear.isArray = function( obj ) {
             url = ajaxSettings.url;
         }
 
-        success = function( data ) {
+        success = function( data, textStatus, jqXHR ) {
             if ( options.success ) {
                 options.success.apply( this, arguments );
             }
         };
-        error = function( type, errorMessage ) {
+        error = function( jqXHR, textStatus, errorThrown ) {
+            jqXHR = that.formatJSONError( jqXHR );
             if ( options.error ) {
                 options.error.apply( this, arguments );
             }
         };
-        extraOptions = {
+        extraOptions = $.extend( {}, ajaxSettings, {
             data: data,
             type: type,
             url: url,
             success: success,
             error: error,
             statusCode: options.statusCode,
-            complete: options.complete
-        };
+            complete: options.complete,
+            headers: options.headers,
+            timeout: this.getTimeout()
+        });
 
-        return AeroGear.ajax( this, $.extend( {}, ajaxSettings, extraOptions ) );
+        // Stringify data if we actually want to POST/PUT JSON data
+        if ( extraOptions.contentType === "application/json" && extraOptions.data && typeof extraOptions.data !== "string" ) {
+            extraOptions.data = JSON.stringify( extraOptions.data );
+        }
+
+        return $.ajax( this.addAuthIdentifier( $.extend( {}, this.getAjaxSettings(), extraOptions ) ) );
     };
 
     /**
@@ -731,7 +841,7 @@ AeroGear.isArray = function( obj ) {
         @param {Function} [options.error] - a callback to be called when the request to the server results in an error
         @param {Object} [options.statusCode] - a collection of status codes and callbacks to fire when the request to the server returns on of those codes. For more info see the statusCode option on the <a href="http://api.jquery.com/jQuery.ajax/">jQuery.ajax page</a>.
         @param {Function} [options.success] - a callback to be called when the result of the request to the server is successful
-        @returns {Object} A deferred implementing the promise interface similar to the jqXHR created by jQuery.ajax
+        @returns {Object} The jqXHR created by jQuery.ajax. To cancel the request, simply call the abort() method of the jqXHR object which will then trigger the error and complete callbacks for this request. For more info, see the <a href="http://api.jquery.com/jQuery.ajax/">jQuery.ajax page</a>.
         @example
         var myPipe = AeroGear.Pipeline( "tasks" ).pipes[ 0 ];
 
@@ -786,12 +896,13 @@ AeroGear.isArray = function( obj ) {
         delPath = delId ? "/" + delId : "";
         url = ajaxSettings.url + delPath;
 
-        success = function( data ) {
+        success = function( data, textStatus, jqXHR ) {
             if ( options.success ) {
                 options.success.apply( this, arguments );
             }
         };
-        error = function( type, errorMessage ) {
+        error = function( jqXHR, textStatus, errorThrown ) {
+            jqXHR = that.formatJSONError( jqXHR );
             if ( options.error ) {
                 options.error.apply( this, arguments );
             }
@@ -802,10 +913,12 @@ AeroGear.isArray = function( obj ) {
             success: success,
             error: error,
             statusCode: options.statusCode,
-            complete: options.complete
+            complete: options.complete,
+            headers: options.headers,
+            timeout: this.getTimeout()
         };
 
-        return AeroGear.ajax( this, $.extend( {}, ajaxSettings, extraOptions ) );
+        return $.ajax( this.addAuthIdentifier( $.extend( {}, ajaxSettings, extraOptions ) ) );
     };
 })( AeroGear, jQuery, uuid );
 
@@ -875,7 +988,6 @@ AeroGear.isArray = function( obj ) {
         @param {String} storeName - the name used to reference this particular store
         @param {Object} [settings={}] - the settings to be passed to the adapter
         @param {String} [settings.recordId="id"] - the name of the field used to uniquely identify a "record" in the data
-        @param {Boolean} [settings.dataSync=false] - if true, any pipes associated with this store will attempt to keep the data in sync with the server (coming soon)
         @returns {Object} The created store
      */
     AeroGear.DataManager.adapters.Memory = function( storeName, settings ) {
@@ -889,8 +1001,7 @@ AeroGear.isArray = function( obj ) {
         // Private Instance vars
         var recordId = settings.recordId ? settings.recordId : "id",
             type = "Memory",
-            data = null,
-            dataSync = !!settings.dataSync;
+            data = null;
 
         // Privileged Methods
         /**
@@ -904,28 +1015,13 @@ AeroGear.isArray = function( obj ) {
         };
 
         /**
-            Returns the value of the private data var, filtered by sync status if necessary
+            Returns the value of the private data var
             @private
             @augments Memory
-            @param {Boolean} [dataSyncBypass] - get all data no matter it's sync status
             @returns {Array}
          */
-        this.getData = function( dataSyncBypass ) {
-            var activeData = [],
-                item,
-                syncStatus;
-
-            if ( dataSync && !dataSyncBypass ) {
-                for ( item in data ) {
-                    syncStatus = data[ item ][ "ag-sync-status" ];
-                    if ( syncStatus !== AeroGear.DataManager.STATUS_REMOVED ) {
-                        activeData.push( data[ item ] );
-                    }
-                }
-                return activeData;
-            } else {
-                return data;
-            }
+        this.getData = function() {
+            return data;
         };
 
         /**
@@ -934,11 +1030,6 @@ AeroGear.isArray = function( obj ) {
             @augments Memory
          */
         this.setData = function( newData ) {
-            if ( dataSync ) {
-                for ( var item in newData ) {
-                    newData[ item ][ "ag-sync-status" ] = AeroGear.DataManager.STATUS_NEW;
-                }
-            }
             data = newData;
         };
 
@@ -948,13 +1039,7 @@ AeroGear.isArray = function( obj ) {
             @augments Memory
          */
         this.emptyData = function() {
-            if ( dataSync ) {
-                for ( var item in data ) {
-                    data[ item ][ "ag-sync-status" ] = AeroGear.DataManager.STATUS_REMOVED;
-                }
-            } else {
-                data = null;
-            }
+            data = null;
         };
 
         /**
@@ -964,10 +1049,6 @@ AeroGear.isArray = function( obj ) {
          */
         this.addDataRecord = function( record ) {
             data = data || [];
-            if ( dataSync ) {
-                record[ "ag-sync-status" ] = AeroGear.DataManager.STATUS_NEW;
-                record.id = record.id || uuid();
-            }
             data.push( record );
         };
 
@@ -977,9 +1058,6 @@ AeroGear.isArray = function( obj ) {
             @augments Memory
          */
         this.updateDataRecord = function( index, record ) {
-            if ( dataSync ) {
-                record[ "ag-sync-status" ] = AeroGear.DataManager.STATUS_MODIFIED;
-            }
             data[ index ] = record;
         };
 
@@ -989,21 +1067,7 @@ AeroGear.isArray = function( obj ) {
             @augments Memory
          */
         this.removeDataRecord = function( index ) {
-            if ( dataSync ) {
-                data[ index ][ "ag-sync-status" ] = AeroGear.DataManager.STATUS_REMOVED;
-            } else {
-                data.splice( index, 1 );
-            }
-        };
-
-        /**
-            Returns the value of the private dataSync var
-            @private
-            @augments Memory
-            @returns {Boolean}
-         */
-        this.getDataSync = function() {
-            return dataSync;
+            data.splice( index, 1 );
         };
 
         /**
@@ -1317,7 +1381,6 @@ AeroGear.isArray = function( obj ) {
         @mixes AeroGear.DataManager.adapters.Memory
         @param {String} storeName - the name used to reference this particular store
         @param {Object} [settings={}] - the settings to be passed to the adapter
-        @param {Boolean} [settings.dataSync=false] - if true, any pipes associated with this store will attempt to keep the data in sync with the server (coming soon)
         @param {String} [settings.recordId="id"] - the name of the field used to uniquely identify a "record" in the data
         @param {String} [settings.storageType="sessionStorage"] - the type of store can either be sessionStorage or localStorage
         @returns {Object} The created store
@@ -1335,7 +1398,6 @@ AeroGear.isArray = function( obj ) {
             type = "SessionLocal",
             storeType = settings.storageType || "sessionStorage",
             name = storeName,
-            dataSync = settings.dataSync,
             appContext = document.location.pathname.replace(/[\/\.]/g,"-"),
             storeKey = name + appContext,
             currentData = JSON.parse( window[ storeType ].getItem( storeKey ) );
@@ -1373,30 +1435,38 @@ AeroGear.isArray = function( obj ) {
         save: {
             value: function( data, options ) {
                 // Call the super method
-                AeroGear.DataManager.adapters.Memory.prototype.save.apply( this, arguments );
+                var reset = options && options.reset ? options.reset : false,
+                    oldData = window[ this.getStoreType() ].getItem( this.getStoreKey() ),
+                    newData = AeroGear.DataManager.adapters.Memory.prototype.save.apply( this, [ arguments[ 0 ], reset ] );
 
                 // Sync changes to persistent store
                 try {
-                    window[ this.getStoreType() ].setItem( this.getStoreKey(), JSON.stringify( this.getData() ) );
+                    window[ this.getStoreType() ].setItem( this.getStoreKey(), JSON.stringify( newData ) );
                     if ( options && options.storageSuccess ) {
-                        options.storageSuccess( data );
+                        options.storageSuccess( newData );
                     }
                 } catch( error ) {
+                    oldData = oldData ? JSON.parse( oldData ) : [];
+                    newData = AeroGear.DataManager.adapters.Memory.prototype.save.apply( this, [ oldData, true ] );
                     if ( options && options.storageError ) {
                         options.storageError( error, data );
                     } else {
                         throw error;
                     }
                 }
+
+                return newData;
             }, enumerable: true, configurable: true, writable: true
         },
         remove: {
-            value: function( toRemove, options ) {
+            value: function( toRemove ) {
                 // Call the super method
-                AeroGear.DataManager.adapters.Memory.prototype.remove.apply( this, arguments );
+                var newData = AeroGear.DataManager.adapters.Memory.prototype.remove.apply( this, arguments );
 
                 // Sync changes to persistent store
-                window[ this.getStoreType() ].setItem( this.getStoreKey(), JSON.stringify( this.getData() ) );
+                window[ this.getStoreType() ].setItem( this.getStoreKey(), JSON.stringify( newData ) );
+
+                return newData;
             }, enumerable: true, configurable: true, writable: true
         }
     });
@@ -1506,7 +1576,7 @@ AeroGear.isArray = function( obj ) {
             @returns {Object} Settings extended with auth identifier
          */
         this.addAuthIdentifier = function( settings ) {
-            settings.headers = {};
+            settings.headers = settings.headers ? settings.headers : {};
             settings.headers[ tokenName ] = sessionStorage.getItem( "ag-auth-" + name );
             return $.extend( {}, settings );
         };
@@ -1802,10 +1872,8 @@ AeroGear.isArray = function( obj ) {
             extraOptions.url = url;
         }
 
-        if ( this.isAuthenticated() ) {
-            extraOptions.headers = {};
-            extraOptions.headers[ tokenName ] = sessionStorage.getItem( "ag-auth-" + name );
-        }
+        extraOptions.headers = {};
+        extraOptions.headers[ tokenName ] = sessionStorage.getItem( "ag-auth-" + name );
 
         return $.ajax( $.extend( {}, this.getSettings(), { type: "POST" }, extraOptions ) );
     };
