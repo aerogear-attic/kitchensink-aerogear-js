@@ -40,7 +40,7 @@ function updateMemberTable() {
     memberPipe.read({
         success: function( data ) {
             MemberStore.save( data );
-            $('#members').empty().append(buildMemberRows());
+            $( '#members' ).html( buildMemberRows() );
         }
     });
 }
